@@ -1,0 +1,605 @@
+- hosts: nodes
+  become: yes
+  vars:
+    dataDir: /mnt/vdb/var/lib/mongo
+    logDir: /var/log/mongodb
+    mongodbconfsrc: ./mongoFiles/mongod.conf
+    mongodbconfdest: /etc/mongod.conf
+    mongodbfoldersrc: ../mongodb-linux-x86_64-ubuntu1604-4.4.1/
+    mongodbfolderdest: /usr/local/mongodb
+    usrFilesrc: ./mongoFiles/addUser.js
+  tasks:
+  - name: create the log directory for primary nodes
+    file:
+      path: "{{ logDir }}"
+      state: directory
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  - name: create the log file for primary nodes
+    file:
+      path: "{{ logDir }}/mongod.log"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+      state: touch
+  - name: create the data directory for primary nodes
+    file:
+      path: "{{ dataDir }}"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+      state: directory
+  - name: send mongodbconf file
+    copy:
+      src: "{{ mongodbconfsrc }}"
+      dest: "{{ mongodbconfdest }}"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  - name: send mongodb folder
+    copy:
+      src: "{{ mongodbfoldersrc }}"
+      dest: "{{ mongodbfolderdest }}"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o+rx"
+  - name: create start mongodb script
+    copy:
+      dest: "{{ mongodbfolderdest }}/startMongo.sh"
+      content: |
+        sudo {{ mongodbfolderdest }}/bin/mongod --fork --config {{ mongodbconfdest }} &
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  - name: create stop mongodb script
+    copy:
+      dest: "{{ mongodbfolderdest }}/stopMongo.sh"
+      content: |
+        sudo {{ mongodbfolderdest }}/bin/mongod --config {{ mongodbconfdest }} --shutdown
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  - name: replace line for log path
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: 'path: /var/log/mongodb/mongod.log'
+      line: '  path: {{ logDir }}/mongod.log'
+      backrefs: yes
+  - name: replace line for data path
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: 'dbPath: /var/lib/mongo'
+      line: '  dbPath: {{ dataDir }}'
+      backrefs: yes
+  - name: send addUser.js file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  
+- hosts: masters
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: sharding
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+    stopMongos: mongoFiles/stopMongos.js
+  tasks:
+  - name: create start mongodb script
+    copy:
+      dest: "{{ mongodbfolderdest }}/startMongo.sh"
+      content: |
+        sudo {{ mongodbfolderdest }}/bin/mongos --fork --config {{ mongodbconfdest }} &
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  - name: delete  mongodb stop script
+    file:
+      state: absent
+      path: "{{ mongodbfolderdest }}/stopMongo.sh"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  - name: send stop file for mongos
+    copy:
+      src: "{{ stopMongos }}"
+      dest: "{{ mongodbfolderdest }}"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          configDB: configurationReplicaSet/node9:27017
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+  - name: replace line for removing the storage word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: 'storage:'
+      state: absent
+  - name: replace line for removing the dbPath word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '  dbPath: /mnt/vdb/var/lib/mongo'
+      state: absent
+  - name: replace line for removing the journal word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '  journal:'
+      state: absent
+  - name: replace line for removing the enabled word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '    enabled: true'
+      state: absent
+
+- hosts: firstReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: firstReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: secondReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: secondReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: thirdReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: thirdReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: forthReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: forthReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+
+- hosts: fifthReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: fifthReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: sixthReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: sixthReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+
+- hosts: seventhReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: seventhReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+
+- hosts: eighthReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: eighthReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: ninthReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: ninthReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: tenthReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: tenthReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: eleventhReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: eleventhReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: twelfthReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: twelfthReplicaSet
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: shardsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+
+- hosts: configurationReplicaSet
+  become: true
+  vars:
+    mongodbfolderdest: /usr/local/mongodb
+    mongodbconfdest: /etc/mongod.conf
+    replicaSetName: configurationReplicaSet                                    
+    usrFilesrc: mongoFiles/{{ replicaSetName }}.js
+  tasks:
+  - name: send sharding file
+    copy:
+      src: "{{ usrFilesrc }}"
+      dest: "{{ mongodbfolderdest }}/sharding.js"
+      owner: user
+      group: user
+      mode: "u+rwx,g+rwx,o-w"
+    run_once: true
+  - name: modify configuration file for mongod
+    blockinfile:
+      dest: "{{ mongodbconfdest }}"
+      insertbefore: "#sharding:"
+      marker: " "
+      block: |
+        sharding:
+          clusterRole: configsvr
+        replication:
+          replSetName: {{ replicaSetName }}
+  - name: replace line for removing the sharding word
+    lineinfile:
+      dest: "{{ mongodbconfdest }}"
+      regexp: '^#sharding:'
+      state: absent
+
+- hosts: nodes
+  vars:
+    mongodPath: /usr/local/mongodb
+  become: yes
+  become_user: user
+  tasks:
+  - name: starting mongod on all nodes
+    shell: "sudo sh {{ mongodPath }}/startMongo.sh"
+  - pause:
+      seconds: 180
+
+- hosts: primaryNodes
+  vars:
+    mongodPath: /usr/local/mongodb
+  become: yes
+  become_user: user
+  tasks:
+  - name: form shards
+    shell: "sudo {{ mongodPath }}/bin/mongo localhost:27017 < {{ mongodPath }}/sharding.js"
+  - pause:
+      seconds: 120
+
+- hosts: masters
+  vars:
+    mongodPath: /usr/local/mongodb
+  become: yes
+  become_user: user
+  tasks:
+  - name: add shards on mongos
+    shell: "sudo {{ mongodPath }}/bin/mongo localhost:27017 < {{ mongodPath }}/sharding.js"
+    run_once: true
